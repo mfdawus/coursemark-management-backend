@@ -75,7 +75,7 @@ $app->post('/api/login/staff', function ($request, $response) use ($pdo) {
     }
 
     // Prepare and execute query
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = :email LIMIT 1");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = :email AND role != 'student' LIMIT 1");
     $stmt->execute([':email' => $email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
