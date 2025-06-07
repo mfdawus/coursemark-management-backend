@@ -147,7 +147,42 @@ $app->group('/student', function (RouteCollectorProxy $group) {
 
 
 /* LECTURER ROUTES */
-$app->group('/lecturer', function (RouteCollectorProxy $group) {
+
+$app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
+
+    $group->get('/analytics', function ($request, $response) use ($pdo) {
+        try {
+            // Fetch all students
+            $stmt = $pdo->prepare("SELECT id, name, matric_number FROM users WHERE role = 'student'");
+            $stmt->execute();
+            $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($students)) {
+                $payload = [
+                    'success' => false,
+                    'message' => 'No students found.',
+                    'students' => []
+                ];
+                $response->getBody()->write(json_encode($payload));
+                return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+            }
+
+            $payload = [
+                'success' => true,
+                'message' => 'Students fetched successfully.',
+                'students' => $students
+            ];
+            $response->getBody()->write(json_encode($payload));
+            return $response->withHeader('Content-Type', 'application/json');
+        } catch (PDOException $e) {
+            $payload = [
+                'success' => false,
+                'message' => 'Database error: ' . $e->getMessage()
+            ];
+            $response->getBody()->write(json_encode($payload));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+        }
+    });
 
 
     $group->get('/marks', function ($request, $response) {
@@ -161,11 +196,6 @@ $app->group('/lecturer', function (RouteCollectorProxy $group) {
     });
 
     $group->get('/progress', function ($request, $response) {
-
-        return $response;
-    });
-
-    $group->get('/analytics', function ($request, $response) {
 
         return $response;
     });

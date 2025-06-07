@@ -6,7 +6,7 @@ use Psr\Http\Message\ResponseInterface as Response;
 
 
 return function (Request $request, Handler $handler): Response {
-    session_start();
+
 
     // Check if user is logged in
     if (!isset($_SESSION['user'])) {
@@ -16,7 +16,7 @@ return function (Request $request, Handler $handler): Response {
     }
 
     // Get user role
-    echo $userRole = $_SESSION['user']['role'] ?? null;
+    $userRole = $_SESSION['user']['role'] ?? null;
 
     // Get route path to check which group they're accessing
     $uri = $request->getUri()->getPath();
