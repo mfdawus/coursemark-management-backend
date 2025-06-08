@@ -1,6 +1,7 @@
 <?php
 
 use Slim\Routing\RouteCollectorProxy;
+use Psr\Http\Message\ResponseInterface as Response;
 
 $authMiddleware = require __DIR__ . '/../middleware/AuthMiddleware.php';
 
@@ -190,10 +191,82 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         return $response;
     });
 
-    $group->get('/courses', function ($request, $response) {
-
-        return $response;
+    // GET all courses
+    $group->get('/courses', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query("SELECT * FROM courses ORDER BY created_at DESC");
+        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($courses));
+        return $response->withHeader('Content-Type', 'application/json');
     });
+
+    // POST: Create course
+    $group->post('/courses', function ($request, $response) use ($pdo) {
+        $data = $request->getParsedBody();
+        $stmt = $pdo->prepare("INSERT INTO courses (course_code, course_name, created_at) VALUES (?, ?, NOW())");
+        $stmt->execute([$data['course_code'], $data['course_name']]);
+        return $response->withJson(['success' => true, 'message' => 'Course added.']);
+    });
+
+    // PUT: Update course
+    $group->put('/courses/{id}', function ($request, $response, $args) use ($pdo) {
+        $id = $args['id'];
+        $data = $request->getParsedBody();
+        $stmt = $pdo->prepare("UPDATE courses SET course_code = ?, course_name = ? WHERE id = ?");
+        $stmt->execute([$data['course_code'], $data['course_name'], $id]);
+        return $response->withJson(['success' => true, 'message' => 'Course updated.']);
+    });
+
+    // DELETE: Delete course
+    $group->delete('/courses/{id}', function ($request, $response, $args) use ($pdo) {
+        $id = $args['id'];
+        $stmt = $pdo->prepare("DELETE FROM courses WHERE id = ?");
+        $stmt->execute([$id]);
+        return $response->withJson(['success' => true, 'message' => 'Course deleted.']);
+    });
+
+    $group->get('/enrollments', function ($request, Response $response) use ($pdo) {
+    $sql = "SELECT course_user.id, users.name AS student_name, courses.course_name
+            FROM course_user
+            JOIN users ON users.id = course_user.user_id
+            JOIN courses ON courses.id = course_user.course_id
+            WHERE users.role = 'student'";
+    $stmt = $pdo->query($sql);
+    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $payload = json_encode($data);
+
+    // Get response body stream and write to it
+    $response->getBody()->write($payload);
+
+    // Return response with JSON header
+    return $response
+        ->withHeader('Content-Type', 'application/json')
+        ->withStatus(200);
+});
+
+
+    $group->post('/enroll', function ($request, $response) use ($pdo) {
+        $data = $request->getParsedBody();
+        $stmt = $pdo->prepare("INSERT INTO course_user (user_id, course_id, role, created_at) VALUES (?, ?, 'student', NOW())");
+        $stmt->execute([$data['student_id'], $data['course_id']]);
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(201)
+            ->write(json_encode(['success' => true]));
+    });
+
+    $group->put('/enroll/{id}', function ($request, $response, $args) use ($pdo) {
+        $data = $request->getParsedBody();
+        $stmt = $pdo->prepare("UPDATE course_user SET user_id = ?, course_id = ? WHERE id = ?");
+        $stmt->execute([$data['student_id'], $data['course_id'], $args['id']]);
+        return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['success' => true]));
+    });
+
+    $group->delete('/enroll/{id}', function ($request, $response, $args) use ($pdo) {
+        $stmt = $pdo->prepare("DELETE FROM course_user WHERE id = ?");
+        $stmt->execute([$args['id']]);
+        return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['success' => true]));
+    });
+
+
 
     $group->get('/progress', function ($request, $response) {
 
