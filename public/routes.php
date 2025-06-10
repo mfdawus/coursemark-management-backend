@@ -225,24 +225,24 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
     });
 
     $group->get('/enrollments', function ($request, Response $response) use ($pdo) {
-    $sql = "SELECT course_user.id, users.name AS student_name, courses.course_name
+        $sql = "SELECT course_user.id, users.name AS student_name, courses.course_name
             FROM course_user
             JOIN users ON users.id = course_user.user_id
             JOIN courses ON courses.id = course_user.course_id
             WHERE users.role = 'student'";
-    $stmt = $pdo->query($sql);
-    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $stmt = $pdo->query($sql);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $payload = json_encode($data);
+        $payload = json_encode($data);
 
-    // Get response body stream and write to it
-    $response->getBody()->write($payload);
+        // Get response body stream and write to it
+        $response->getBody()->write($payload);
 
-    // Return response with JSON header
-    return $response
-        ->withHeader('Content-Type', 'application/json')
-        ->withStatus(200);
-});
+        // Return response with JSON header
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(200);
+    });
 
 
     $group->post('/enroll', function ($request, $response) use ($pdo) {
@@ -277,11 +277,67 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
 
 
 /* ADMIN ROUTES */
-$app->group('/admin', function (RouteCollectorProxy $group) {
+$app->group('/api/admin',  function (RouteCollectorProxy $group) use ($pdo) {
 
-    $group->get('', function ($request, $response) {
+    $group->get('/users', function ($request, $response) use ($pdo) {
+        try {
+            $stmt = $pdo->query("SELECT id, name, email, matric_number,role, created_at, updated_at FROM users");
+            $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        return $response;
+            $payload = json_encode(['students' => $students]);
+
+            $response->getBody()->write($payload);
+            return $response->withHeader('Content-Type', 'application/json');
+        } catch (PDOException $e) {
+            $error = ['error' => 'Failed to fetch students', 'details' => $e->getMessage()];
+            $response->getBody()->write(json_encode($error));
+            return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+        }
+    });
+
+    $group->put('/users/{id}/details', function ($request, $response, $args) use ($pdo) {
+        $id = $args['id'];
+        $data = $request->getParsedBody();
+
+        $stmt = $pdo->prepare("UPDATE users SET name = :name, email = :email, matric_number = :matric WHERE id = :id");
+        $stmt->execute([
+            ':name' => $data['name'],
+            ':email' => $data['email'],
+            ':matric' => $data['matric'],
+            ':id' => $id,
+        ]);
+
+        $response->getBody()->write(json_encode(['message' => 'User details updated']));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->put('/users/{id}/password', function ($request, $response, $args) use ($pdo) {
+        $id = $args['id'];
+        $data = $request->getParsedBody();
+        $hashed = password_hash($data['password'], PASSWORD_DEFAULT);
+
+        $stmt = $pdo->prepare("UPDATE users SET password = :password WHERE id = :id");
+        $stmt->execute([
+            ':password' => $hashed,
+            ':id' => $id,
+        ]);
+
+        $response->getBody()->write(json_encode(['message' => 'Password updated']));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->put('/users/{id}/role', function ($request, $response, $args) use ($pdo) {
+        $id = $args['id'];
+        $data = $request->getParsedBody();
+
+        $stmt = $pdo->prepare("UPDATE users SET role = :role WHERE id = :id");
+        $stmt->execute([
+            ':role' => $data['role'],
+            ':id' => $id,
+        ]);
+
+        $response->getBody()->write(json_encode(['message' => 'Role updated']));
+        return $response->withHeader('Content-Type', 'application/json');
     });
 })->add($authMiddleware);
 
