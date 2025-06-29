@@ -185,12 +185,6 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         }
     });
 
-
-    $group->get('/marks', function ($request, $response) {
-
-        return $response;
-    });
-
     // GET all courses
     $group->get('/courses', function ($request, $response) use ($pdo) {
         $stmt = $pdo->query("SELECT * FROM courses ORDER BY created_at DESC");
@@ -266,6 +260,394 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['success' => true]));
     });
 
+    // Get all enrolled students in courses
+    $group->get('/enrolled-students', function ($request, $response) use ($pdo) {
+    $sql = "SELECT 
+                cu.id AS enrollment_id,
+                u.id AS student_id,
+                u.name AS student_name,
+                u.matric_number,
+                c.id AS course_id,
+                c.course_code,
+                c.course_name
+            FROM course_user cu
+            JOIN users u ON u.id = cu.user_id
+            JOIN courses c ON c.id = cu.course_id
+            WHERE cu.role = 'student'
+            ORDER BY c.course_name, u.name";
+    $stmt = $pdo->query($sql);
+    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $payload = json_encode($data);
+    $response->getBody()->write($payload);
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+//Marks
+$group->get('/marks', function ($request, $response) use ($pdo) {
+    $params = $request->getQueryParams();
+    $courseId = $params['course_id'] ?? null;
+    $studentId = $params['student_id'] ?? null;
+
+    if (!$courseId || !$studentId) {
+        $response->getBody()->write(json_encode(['error' => 'Missing course_id or student_id']));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+    }
+
+    try {
+        $infoStmt = $pdo->prepare("
+            SELECT c.course_name, c.course_code, u.name AS student_name, u.matric_number
+            FROM courses c
+            CROSS JOIN users u
+            WHERE c.id = :course_id AND u.id = :student_id
+        ");
+        $infoStmt->execute(['course_id' => $courseId, 'student_id' => $studentId]);
+        $info = $infoStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$info) {
+            $response->getBody()->write(json_encode(['error' => 'Course or student not found']));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+        }
+
+        $marksStmt = $pdo->prepare("
+            SELECT a.id AS assessment_id, a.title, a.type, a.max_mark, 
+                COALESCE(m.mark_obtained, 0) AS mark_obtained
+            FROM assessments a
+            LEFT JOIN marks m ON m.assessment_id = a.id AND m.student_id = :student_id
+            WHERE a.course_id = :course_id
+        ");
+        $marksStmt->execute(['course_id' => $courseId, 'student_id' => $studentId]);
+        $marks = $marksStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $payload = [
+            'student' => [
+                'id' => $studentId,
+                'name' => $info['student_name'],
+                'matric_number' => $info['matric_number']
+            ],
+            'course' => [
+                'id' => $courseId,
+                'name' => $info['course_name'],
+                'code' => $info['course_code']
+            ],
+            'marks' => $marks
+        ];
+
+        $response->getBody()->write(json_encode($payload));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (PDOException $e) {
+        $response->getBody()->write(json_encode(['error' => 'Database error: ' . $e->getMessage()]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+    }
+});
+
+//Get all assessments + marks for a student in a course
+$group->get('/marks/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
+    $course_id = $args['course_id'];
+    $student_id = $args['student_id'];
+
+    // Get assessments and existing marks
+    $sql = "SELECT 
+                a.id AS assessment_id,
+                a.title,
+                a.type,
+                a.max_mark,
+                a.weight,
+                COALESCE(m.mark_obtained, 0) AS mark_obtained
+            FROM assessments a
+            LEFT JOIN marks m 
+                ON m.assessment_id = a.id AND m.student_id = :student_id
+            WHERE a.course_id = :course_id
+            ORDER BY a.type, a.title";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['course_id' => $course_id, 'student_id' => $student_id]);
+    $assessments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $response->getBody()->write(json_encode($assessments));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+//Save mark (upsert)
+$group->post('/marks', function ($request, $response) use ($pdo) {
+    $data = $request->getParsedBody();
+    $assessment_id = $data['assessment_id'];
+    $student_id = $data['student_id'];
+    $mark_obtained = $data['mark_obtained'];
+
+    // Check if record exists
+    $stmt = $pdo->prepare("SELECT id FROM marks WHERE assessment_id = ? AND student_id = ?");
+    $stmt->execute([$assessment_id, $student_id]);
+    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($existing) {
+        // Update
+        $stmt = $pdo->prepare("UPDATE marks SET mark_obtained = ?, updated_at = NOW() WHERE id = ?");
+        $stmt->execute([$mark_obtained, $existing['id']]);
+    } else {
+        // Insert
+        $stmt = $pdo->prepare("INSERT INTO marks (assessment_id, student_id, mark_obtained, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())");
+        $stmt->execute([$assessment_id, $student_id, $mark_obtained]);
+    }
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// ===============================
+// GET all assessments, optionally by course
+$group->get('/assessments[/{course_id}]', function ($request, $response, $args) use ($pdo) {
+    $course_id = $args['course_id'] ?? null;
+
+    if ($course_id) {
+        $stmt = $pdo->prepare("SELECT a.*, c.course_name FROM assessments a
+            JOIN courses c ON c.id = a.course_id
+            WHERE a.course_id = ?");
+        $stmt->execute([$course_id]);
+    } else {
+        $stmt = $pdo->query("SELECT a.*, c.course_name FROM assessments a
+            JOIN courses c ON c.id = a.course_id");
+    }
+    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $response->getBody()->write(json_encode($data));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// ===============================
+// POST: Create assessment with weight check
+$group->post('/assessments', function ($request, $response) use ($pdo) {
+    $data = $request->getParsedBody();
+    $course_id = $data['course_id'];
+
+    // Check if adding this weight exceeds 100
+    $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ?");
+    $stmt->execute([$course_id]);
+    $currentWeight = $stmt->fetchColumn() ?: 0;
+
+    if ($currentWeight + $data['weight'] > 100) {
+        return $response->withHeader('Content-Type', 'application/json')
+            ->withStatus(400)
+            ->write(json_encode(['success' => false, 'message' => 'Total weight exceeds 100%']));
+    }
+
+    $stmt = $pdo->prepare("INSERT INTO assessments 
+        (course_id, title, type, max_mark, weight, created_by, created_at, updated_at) 
+        VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())");
+    $stmt->execute([
+        $course_id, $data['title'], $data['type'], 
+        $data['max_mark'], $data['weight'], $data['created_by']
+    ]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// ===============================
+// PUT: Update assessment
+$group->put('/assessments/{id}', function ($request, $response, $args) use ($pdo) {
+    $id = $args['id'];
+    $data = $request->getParsedBody();
+
+    // Check new total weight
+    $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ? AND id != ?");
+    $stmt->execute([$data['course_id'], $id]);
+    $currentWeight = $stmt->fetchColumn() ?: 0;
+
+    if ($currentWeight + $data['weight'] > 100) {
+        return $response->withHeader('Content-Type', 'application/json')
+            ->withStatus(400)
+            ->write(json_encode(['success' => false, 'message' => 'Total weight exceeds 100%']));
+    }
+
+    $stmt = $pdo->prepare("UPDATE assessments SET
+        course_id = ?, title = ?, type = ?, max_mark = ?, weight = ?, updated_at = NOW()
+        WHERE id = ?");
+    $stmt->execute([
+        $data['course_id'], $data['title'], $data['type'], 
+        $data['max_mark'], $data['weight'], $id
+    ]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// ===============================
+// DELETE: Remove assessment
+$group->delete('/assessments/{id}', function ($request, $response, $args) use ($pdo) {
+    $stmt = $pdo->prepare("DELETE FROM assessments WHERE id = ?");
+    $stmt->execute([$args['id']]);
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// ===============================
+//Get enrolled students + assessments + marks
+$group->get('/course-assignment/{course_id}', function ($request, $response, $args) use ($pdo) {
+    $course_id = $args['course_id'];
+
+    // Get students enrolled in this course
+    $stmt = $pdo->prepare("
+        SELECT users.id AS student_id, users.name, users.matric_number
+        FROM course_user
+        JOIN users ON users.id = course_user.user_id
+        WHERE course_user.course_id = ? AND course_user.role = 'student'
+    ");
+    $stmt->execute([$course_id]);
+    $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Get assessments for this course
+    $stmt = $pdo->prepare("SELECT id AS assessment_id, title, type FROM assessments WHERE course_id = ?");
+    $stmt->execute([$course_id]);
+    $assessments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Get all existing marks for these students & assessments
+    $student_ids = array_column($students, 'student_id');
+    $assessment_ids = array_column($assessments, 'assessment_id');
+
+    $marks = [];
+    if (!empty($student_ids) && !empty($assessment_ids)) {
+        $placeholders_students = implode(',', array_fill(0, count($student_ids), '?'));
+        $placeholders_assessments = implode(',', array_fill(0, count($assessment_ids), '?'));
+
+        $stmt = $pdo->prepare("
+            SELECT assessment_id, student_id
+            FROM marks
+            WHERE student_id IN ($placeholders_students)
+            AND assessment_id IN ($placeholders_assessments)
+        ");
+        $stmt->execute(array_merge($student_ids, $assessment_ids));
+        $marks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // Re-map marks for quick lookup
+    $marks_lookup = [];
+    foreach ($marks as $m) {
+        $marks_lookup[$m['student_id']][$m['assessment_id']] = true;
+    }
+
+    // Build final response structure
+    foreach ($students as &$student) {
+        $student['assessments'] = [];
+        foreach ($assessments as $ass) {
+            $assigned = isset($marks_lookup[$student['student_id']][$ass['assessment_id']]);
+            $student['assessments'][] = [
+                'assessment_id' => $ass['assessment_id'],
+                'title' => $ass['title'],
+                'type' => $ass['type'],
+                'assigned' => $assigned
+            ];
+        }
+    }
+
+    $response->getBody()->write(json_encode($students));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+//POST: Assign a student to an assessment
+$group->post('/assign-mark', function ($request, $response) use ($pdo) {
+    $data = $request->getParsedBody();
+    $assessment_id = $data['assessment_id'];
+    $student_id = $data['student_id'];
+
+    // Insert only if not already assigned
+    $stmt = $pdo->prepare("
+        INSERT IGNORE INTO marks (assessment_id, student_id, created_at, updated_at)
+        VALUES (?, ?, NOW(), NOW())
+    ");
+    $stmt->execute([$assessment_id, $student_id]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+//DELETE: Unassign student from assessment
+$group->delete('/assign-mark/{assessment_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
+    $assessment_id = $args['assessment_id'];
+    $student_id = $args['student_id'];
+
+    $stmt = $pdo->prepare("DELETE FROM marks WHERE assessment_id = ? AND student_id = ?");
+    $stmt->execute([$assessment_id, $student_id]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// =====================
+// FINAL EXAMS ROUTES
+// =====================
+
+$group->get('/final-exams', function ($request, $response) use ($pdo) {
+    $stmt = $pdo->query("
+        SELECT u.id AS student_id, u.name, u.matric_number,
+               c.id AS course_id, c.course_code, c.course_name,
+               fe.final_mark
+        FROM enrollments e
+        JOIN users u ON e.student_id = u.id
+        JOIN courses c ON e.course_id = c.id
+        LEFT JOIN final_exams fe 
+          ON fe.course_id = e.course_id AND fe.student_id = u.id
+        ORDER BY c.course_code, u.name
+    ");
+    $students = $stmt->fetchAll();
+    $response->getBody()->write(json_encode($students));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+
+// Get a single student's final mark & course info
+$group->get('/final-exams/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
+    $course_id = $args['course_id'];
+    $student_id = $args['student_id'];
+
+    $stmt = $pdo->prepare("
+        SELECT u.name, u.matric_number, c.course_name, fe.final_mark
+        FROM enrollments e
+        JOIN users u ON e.student_id = u.id
+        JOIN courses c ON e.course_id = c.id
+        LEFT JOIN final_exams fe 
+            ON fe.course_id = e.course_id AND fe.student_id = u.id
+        WHERE e.course_id = ? AND u.id = ?
+        LIMIT 1
+    ");
+    $stmt->execute([$course_id, $student_id]);
+    $data = $stmt->fetch();
+
+    $response->getBody()->write(json_encode($data));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// Insert or update final mark
+$group->post('/final-exams', function ($request, $response) use ($pdo) {
+    $data = $request->getParsedBody();
+    $course_id = $data['course_id'];
+    $student_id = $data['student_id'];
+    $final_mark = $data['final_mark'];
+
+    $stmt = $pdo->prepare("
+        INSERT INTO final_exams (course_id, student_id, final_mark, created_at, updated_at)
+        VALUES (?, ?, ?, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            final_mark = VALUES(final_mark),
+            updated_at = NOW()
+    ");
+    $stmt->execute([$course_id, $student_id, $final_mark]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+// Delete final mark
+$group->delete('/final-exams/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
+    $course_id = $args['course_id'];
+    $student_id = $args['student_id'];
+
+    $stmt = $pdo->prepare("DELETE FROM final_exams WHERE course_id = ? AND student_id = ?");
+    $stmt->execute([$course_id, $student_id]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
 
 
     $group->get('/progress', function ($request, $response) {
