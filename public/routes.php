@@ -193,20 +193,34 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-    // POST: Create course
+    // POST: Create course with semester & year
     $group->post('/courses', function ($request, $response) use ($pdo) {
         $data = $request->getParsedBody();
-        $stmt = $pdo->prepare("INSERT INTO courses (course_code, course_name, created_at) VALUES (?, ?, NOW())");
-        $stmt->execute([$data['course_code'], $data['course_name']]);
+        $stmt = $pdo->prepare("INSERT INTO courses (course_code, course_name, semester, year, created_at)
+            VALUES (?, ?, ?, ?, NOW())");
+        $stmt->execute([
+            $data['course_code'],
+            $data['course_name'],
+            $data['semester'],
+            $data['year']
+        ]);
         return $response->withJson(['success' => true, 'message' => 'Course added.']);
     });
 
-    // PUT: Update course
+    // PUT: Update course with semester & year
     $group->put('/courses/{id}', function ($request, $response, $args) use ($pdo) {
         $id = $args['id'];
         $data = $request->getParsedBody();
-        $stmt = $pdo->prepare("UPDATE courses SET course_code = ?, course_name = ? WHERE id = ?");
-        $stmt->execute([$data['course_code'], $data['course_name'], $id]);
+        $stmt = $pdo->prepare("UPDATE courses 
+            SET course_code = ?, course_name = ?, semester = ?, year = ? 
+            WHERE id = ?");
+        $stmt->execute([
+            $data['course_code'],
+            $data['course_name'],
+            $data['semester'],
+            $data['year'],
+            $id
+        ]);
         return $response->withJson(['success' => true, 'message' => 'Course updated.']);
     });
 
@@ -240,25 +254,71 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
 
 
     $group->post('/enroll', function ($request, $response) use ($pdo) {
-        $data = $request->getParsedBody();
-        $stmt = $pdo->prepare("INSERT INTO course_user (user_id, course_id, role, created_at) VALUES (?, ?, 'student', NOW())");
-        $stmt->execute([$data['student_id'], $data['course_id']]);
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(201)
-            ->write(json_encode(['success' => true]));
-    });
+    $data = $request->getParsedBody();
+    $student_id = $data['student_id'];
+    $course_id = $data['course_id'];
+
+    // Insert into course_user
+    $stmt = $pdo->prepare("INSERT IGNORE INTO course_user (user_id, course_id, role, created_at) VALUES (?, ?, 'student', NOW())");
+    $stmt->execute([$student_id, $course_id]);
+
+    // Insert into final_exams with default mark 0
+    $stmt2 = $pdo->prepare("
+        INSERT IGNORE INTO final_exams (course_id, student_id, final_mark, created_at, updated_at)
+        VALUES (?, ?, 0, NOW(), NOW())
+    ");
+    $stmt2->execute([$course_id, $student_id]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
+});
+
+
 
     $group->put('/enroll/{id}', function ($request, $response, $args) use ($pdo) {
-        $data = $request->getParsedBody();
-        $stmt = $pdo->prepare("UPDATE course_user SET user_id = ?, course_id = ? WHERE id = ?");
-        $stmt->execute([$data['student_id'], $data['course_id'], $args['id']]);
-        return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['success' => true]));
-    });
+    $data = $request->getParsedBody();
+    $enrollmentId = $args['id'];
+    $student_id = $data['student_id'];
+    $course_id = $data['course_id'];
 
-    $group->delete('/enroll/{id}', function ($request, $response, $args) use ($pdo) {
-        $stmt = $pdo->prepare("DELETE FROM course_user WHERE id = ?");
-        $stmt->execute([$args['id']]);
-        return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['success' => true]));
-    });
+    // Update course_user
+    $stmt = $pdo->prepare("UPDATE course_user SET user_id = ?, course_id = ? WHERE id = ?");
+    $stmt->execute([$student_id, $course_id, $enrollmentId]);
+
+    // Upsert into final_exams
+    $stmt2 = $pdo->prepare("
+        INSERT INTO final_exams (course_id, student_id, final_mark, created_at, updated_at)
+        VALUES (?, ?, 0, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE updated_at = NOW()
+    ");
+    $stmt2->execute([$course_id, $student_id]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+   $group->delete('/enroll/{id}', function ($request, $response, $args) use ($pdo) {
+    $enrollmentId = $args['id'];
+
+    // Get course_id and user_id before deleting
+    $stmt = $pdo->prepare("SELECT course_id, user_id FROM course_user WHERE id = ?");
+    $stmt->execute([$enrollmentId]);
+    $enrollment = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($enrollment) {
+        // Delete from final_exams
+        $stmtDelFinal = $pdo->prepare("DELETE FROM final_exams WHERE course_id = ? AND student_id = ?");
+        $stmtDelFinal->execute([$enrollment['course_id'], $enrollment['user_id']]);
+
+        // Delete from course_user
+        $stmtDelCU = $pdo->prepare("DELETE FROM course_user WHERE id = ?");
+        $stmtDelCU->execute([$enrollmentId]);
+    }
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
 
     // Get all enrolled students in courses
     $group->get('/enrolled-students', function ($request, $response) use ($pdo) {
@@ -415,20 +475,19 @@ $group->get('/assessments[/{course_id}]', function ($request, $response, $args) 
 });
 
 // ===============================
-// POST: Create assessment with weight check
+// POST: Create assessment with weight check (max 70%)
 $group->post('/assessments', function ($request, $response) use ($pdo) {
     $data = $request->getParsedBody();
     $course_id = $data['course_id'];
 
-    // Check if adding this weight exceeds 100
     $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ?");
     $stmt->execute([$course_id]);
     $currentWeight = $stmt->fetchColumn() ?: 0;
 
-    if ($currentWeight + $data['weight'] > 100) {
+    if ($currentWeight + $data['weight'] > 70) {
         return $response->withHeader('Content-Type', 'application/json')
             ->withStatus(400)
-            ->write(json_encode(['success' => false, 'message' => 'Total weight exceeds 100%']));
+            ->write(json_encode(['success' => false, 'message' => 'Total assessment weight exceeds 70%.']));
     }
 
     $stmt = $pdo->prepare("INSERT INTO assessments 
@@ -444,20 +503,19 @@ $group->post('/assessments', function ($request, $response) use ($pdo) {
 });
 
 // ===============================
-// PUT: Update assessment
+// PUT: Update assessment with weight check (max 70%)
 $group->put('/assessments/{id}', function ($request, $response, $args) use ($pdo) {
     $id = $args['id'];
     $data = $request->getParsedBody();
 
-    // Check new total weight
     $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ? AND id != ?");
     $stmt->execute([$data['course_id'], $id]);
     $currentWeight = $stmt->fetchColumn() ?: 0;
 
-    if ($currentWeight + $data['weight'] > 100) {
+    if ($currentWeight + $data['weight'] > 70) {
         return $response->withHeader('Content-Type', 'application/json')
             ->withStatus(400)
-            ->write(json_encode(['success' => false, 'message' => 'Total weight exceeds 100%']));
+            ->write(json_encode(['success' => false, 'message' => 'Total assessment weight exceeds 70%.']));
     }
 
     $stmt = $pdo->prepare("UPDATE assessments SET
@@ -582,11 +640,9 @@ $group->get('/final-exams', function ($request, $response) use ($pdo) {
         SELECT u.id AS student_id, u.name, u.matric_number,
                c.id AS course_id, c.course_code, c.course_name,
                fe.final_mark
-        FROM enrollments e
-        JOIN users u ON e.student_id = u.id
-        JOIN courses c ON e.course_id = c.id
-        LEFT JOIN final_exams fe 
-          ON fe.course_id = e.course_id AND fe.student_id = u.id
+        FROM final_exams fe
+        JOIN users u ON fe.student_id = u.id
+        JOIN courses c ON fe.course_id = c.id
         ORDER BY c.course_code, u.name
     ");
     $students = $stmt->fetchAll();
@@ -595,29 +651,43 @@ $group->get('/final-exams', function ($request, $response) use ($pdo) {
 });
 
 
-// Get a single student's final mark & course info
+// ✅ Get a single student's final exam record (name, matric, course, final_mark, and assessments)
 $group->get('/final-exams/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
     $course_id = $args['course_id'];
     $student_id = $args['student_id'];
 
+    // Get course, student and final exam mark
     $stmt = $pdo->prepare("
         SELECT u.name, u.matric_number, c.course_name, fe.final_mark
-        FROM enrollments e
-        JOIN users u ON e.student_id = u.id
-        JOIN courses c ON e.course_id = c.id
-        LEFT JOIN final_exams fe 
-            ON fe.course_id = e.course_id AND fe.student_id = u.id
-        WHERE e.course_id = ? AND u.id = ?
-        LIMIT 1
+        FROM users u
+        CROSS JOIN courses c
+        LEFT JOIN final_exams fe ON fe.student_id = u.id AND fe.course_id = c.id
+        WHERE u.id = ? AND c.id = ?
     ");
-    $stmt->execute([$course_id, $student_id]);
+    $stmt->execute([$student_id, $course_id]);
     $data = $stmt->fetch();
 
-    $response->getBody()->write(json_encode($data));
+    // Get assessments for the course
+    $stmt2 = $pdo->prepare("
+        SELECT id AS assessment_id, title, type, max_mark, weight
+        FROM assessments
+        WHERE course_id = ?
+    ");
+    $stmt2->execute([$course_id]);
+    $assessments = $stmt2->fetchAll();
+
+    $response->getBody()->write(json_encode([
+        'course_name' => $data['course_name'] ?? '',
+        'name' => $data['name'] ?? '',
+        'matric_number' => $data['matric_number'] ?? '',
+        'final_mark' => $data['final_mark'] ?? 0,
+        'assessments' => $assessments
+    ]));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
-// Insert or update final mark
+
+// ✅ Save or update final mark
 $group->post('/final-exams', function ($request, $response) use ($pdo) {
     $data = $request->getParsedBody();
     $course_id = $data['course_id'];
@@ -637,7 +707,7 @@ $group->post('/final-exams', function ($request, $response) use ($pdo) {
     return $response->withHeader('Content-Type', 'application/json');
 });
 
-// Delete final mark
+// ✅ Delete final mark
 $group->delete('/final-exams/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
     $course_id = $args['course_id'];
     $student_id = $args['student_id'];
