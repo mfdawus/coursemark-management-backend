@@ -745,6 +745,82 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
+    // =====================
+    // REMARK AND FEEDBACK ROUTES
+    // =====================
+
+    //RemarksList
+   $group->get('/students-remarks', function ($request, $response) use ($pdo) {
+    $stmt = $pdo->query("
+        SELECT 
+            u.id AS student_id,
+            u.name AS student_name,
+            u.matric_number,
+            c.id AS course_id,
+            c.course_code,
+            c.course_name,
+            fe.final_mark
+        FROM final_exams fe
+        JOIN users u ON fe.student_id = u.id
+        JOIN courses c ON fe.course_id = c.id
+        ORDER BY c.course_code, u.name
+    ");
+    $students = $stmt->fetchAll();
+    $response->getBody()->write(json_encode($students));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+
+
+    //RemarkEntry
+    $group->get('/remark-requests/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
+        $course_id = $args['course_id'];
+        $student_id = $args['student_id'];
+
+        // Try to get the remark
+        $stmt = $pdo->prepare("
+            SELECT rr.id, rr.assessment_id, rr.message, rr.status
+            FROM remark_requests rr
+            JOIN assessments a ON rr.assessment_id = a.id
+            WHERE rr.student_id = ? AND a.course_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$student_id, $course_id]);
+        $remark = $stmt->fetch();
+
+        $response->getBody()->write(json_encode($remark ?: []));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    //POST insert/update remark
+    $group->post('/remark-requests/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
+    $course_id = $args['course_id'];
+    $student_id = $args['student_id'];
+    $data = json_decode($request->getBody()->getContents(), true);
+
+    $assessment_id = $data['assessment_id'];
+    $message = $data['message'];
+    $status = $data['status'];
+
+    // Check if already exists
+    $stmt = $pdo->prepare("SELECT id FROM remark_requests WHERE student_id = ? AND assessment_id = ?");
+    $stmt->execute([$student_id, $assessment_id]);
+    $existing = $stmt->fetch();
+
+    if ($existing) {
+        $stmt = $pdo->prepare("UPDATE remark_requests SET message = ?, status = ? WHERE id = ?");
+        $stmt->execute([$message, $status, $existing['id']]);
+    } else {
+        $stmt = $pdo->prepare("INSERT INTO remark_requests (student_id, assessment_id, message, status) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$student_id, $assessment_id, $message, $status]);
+    }
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+
+
 
 
 
