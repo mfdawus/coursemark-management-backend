@@ -5,6 +5,7 @@ use Psr\Http\Message\ResponseInterface as Response;
 
 
 /* STUDENT ROUTES */
+
 $app->group('/api/student', function (RouteCollectorProxy $group) use ($pdo) {
 
     $group->get('/dashboard', function ($request, $response) use ($pdo) {
@@ -433,15 +434,15 @@ $app->group('/api/student', function (RouteCollectorProxy $group) use ($pdo) {
                 SELECT 
                     u.id as student_id,
                     u.name,
-                    COALESCE(SUM(
-                        (m.mark_obtained / a.max_mark) * a.weight
-                    ), 0) AS total_mark
+                    COALESCE(SUM((m.mark_obtained / a.max_mark) * a.weight), 0) +
+                    COALESCE(f.final_mark, 0) AS total_mark
                 FROM users u
                 JOIN course_user cu ON cu.user_id = u.id
                 JOIN assessments a ON a.course_id = cu.course_id
                 LEFT JOIN marks m ON m.assessment_id = a.id AND m.student_id = u.id
+                LEFT JOIN final_exams f ON f.course_id = cu.course_id AND f.student_id = u.id
                 WHERE cu.course_id = ? AND cu.role = 'student'
-                GROUP BY u.id
+                GROUP BY u.id, u.name, f.final_mark
                 ORDER BY total_mark DESC
             ");
             $stmt->execute([$course_id]);
