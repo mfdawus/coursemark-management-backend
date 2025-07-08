@@ -683,13 +683,392 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
+    //progress overview
+$group->get('/progress', function ($request, $response) use ($pdo) {
+    $sql = "
+        SELECT 
+            u.id AS student_id,
+            u.name AS student_name,
+            u.matric_number,
+            c.id AS course_id,
+            c.course_name,
+            COUNT(DISTINCT a.id) AS assessment_count,
+            COUNT(DISTINCT m.id) AS marks_count,
+            COALESCE(SUM(m.mark_obtained), 0) AS total_marks,
+            fe.final_mark,
+            COUNT(DISTINCT rr.id) AS remark_count,
+            COALESCE(SUM(DISTINCT a.weight), 0) + 
+                CASE WHEN fe.final_mark IS NOT NULL THEN 30 ELSE 0 END AS total_weight_completed
+        FROM course_user cu
+        JOIN users u ON cu.user_id = u.id
+        JOIN courses c ON cu.course_id = c.id
+        LEFT JOIN assessments a ON a.course_id = c.id
+        LEFT JOIN marks m ON m.assessment_id = a.id AND m.student_id = u.id
+        LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = u.id
+        LEFT JOIN remark_requests rr ON rr.assessment_id = a.id AND rr.student_id = u.id
+        WHERE cu.role = 'student'
+        GROUP BY u.id, u.name, u.matric_number, c.id, c.course_name, fe.final_mark
+        ORDER BY c.course_name, u.name
+    ";
+
+    $stmt = $pdo->query($sql);
+    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $response->getBody()->write(json_encode($data));
+    return $response->withHeader('Content-Type', 'application/json');
+});
 
 
+//analytics
+// $group->get('/analyticss', function ($request, $response) use ($pdo) {
+//     // Get global totals and averages
+//     $sql = "
+//         SELECT 
+//             COUNT(DISTINCT cu.user_id) AS total_students,
+//             COUNT(DISTINCT a.id) AS total_assessments,
+//             COUNT(DISTINCT rr.id) AS total_remarks,
+//             AVG(total_weight) AS avg_weight_completed,
+//             AVG(fe.final_mark) AS avg_final_mark
+//         FROM course_user cu
+//         JOIN courses c ON cu.course_id = c.id
+//         LEFT JOIN assessments a ON a.course_id = c.id
+//         LEFT JOIN remark_requests rr ON rr.assessment_id = a.id
+//         LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = cu.user_id
+//         LEFT JOIN (
+//             SELECT 
+//                 u.id AS student_id,
+//                 c.id AS course_id,
+//                 COALESCE(SUM(DISTINCT a.weight), 0) + 
+//                     CASE WHEN fe.final_mark IS NOT NULL THEN 30 ELSE 0 END AS total_weight
+//             FROM course_user cu
+//             JOIN users u ON cu.user_id = u.id
+//             JOIN courses c ON cu.course_id = c.id
+//             LEFT JOIN assessments a ON a.course_id = c.id
+//             LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = u.id
+//             WHERE cu.role = 'student'
+//             GROUP BY u.id, c.id, fe.final_mark
+//         ) AS subquery ON subquery.student_id = cu.user_id AND subquery.course_id = c.id
+//         WHERE cu.role = 'student'
+//     ";
+
+//     $stmt = $pdo->query($sql);
+//     $summary = $stmt->fetch(PDO::FETCH_ASSOC);
+
+//     // Also prepare a dataset by course for charting
+//     $chartSql = "
+//         SELECT 
+//             c.course_name,
+//             COUNT(DISTINCT cu.user_id) AS student_count,
+//             AVG(COALESCE(fe.final_mark,0)) AS avg_final_mark,
+//             AVG(COALESCE(total_weight,0)) AS avg_total_weight_completed
+//         FROM course_user cu
+//         JOIN courses c ON cu.course_id = c.id
+//         LEFT JOIN (
+//             SELECT 
+//                 u.id AS student_id,
+//                 c.id AS course_id,
+//                 COALESCE(SUM(DISTINCT a.weight), 0) + 
+//                     CASE WHEN fe.final_mark IS NOT NULL THEN 30 ELSE 0 END AS total_weight
+//             FROM course_user cu
+//             JOIN users u ON cu.user_id = u.id
+//             JOIN courses c ON cu.course_id = c.id
+//             LEFT JOIN assessments a ON a.course_id = c.id
+//             LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = u.id
+//             WHERE cu.role = 'student'
+//             GROUP BY u.id, c.id, fe.final_mark
+//         ) AS subquery ON subquery.student_id = cu.user_id AND subquery.course_id = c.id
+//         LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = cu.user_id
+//         WHERE cu.role = 'student'
+//         GROUP BY c.course_name
+//         ORDER BY c.course_name
+//     ";
+
+//     $chartStmt = $pdo->query($chartSql);
+//     $chartData = $chartStmt->fetchAll(PDO::FETCH_ASSOC);
+
+//     $result = [
+//         'summary' => $summary,
+//         'chartData' => $chartData
+//     ];
+
+//     $response->getBody()->write(json_encode($result));
+//     return $response->withHeader('Content-Type', 'application/json');
+// });
+
+// $app->get('/api/lecturer/analytics', function ($request, $response, $args) use ($db) {
+//     // === TOTALS
+//     $totalStudents = $db->query("
+//         SELECT COUNT(DISTINCT cu.user_id) AS count
+//         FROM course_user cu
+//         JOIN users u ON u.id = cu.user_id
+//         WHERE cu.role = 'student' AND u.matric_number IS NOT NULL
+//     ")->fetch()['count'];
+
+//     $totalAssessments = $db->query("SELECT COUNT(*) AS count FROM assessments")->fetch()['count'];
+//     $totalRemarks = $db->query("SELECT COUNT(*) AS count FROM remark_requests")->fetch()['count'];
+
+//     // === PIE: students by course
+//     $pieData = $db->query("
+//         SELECT c.course_name, COUNT(cu.user_id) AS student_count
+//         FROM course_user cu
+//         JOIN courses c ON c.id = cu.course_id
+//         WHERE cu.role = 'student'
+//         GROUP BY c.course_name
+//     ")->fetchAll();
+
+//     // === BAR: avg completion by course
+//     $barData = $db->query("
+//         SELECT c.course_name, 
+//             COALESCE(AVG((sub.completed_weight + COALESCE(fe.final_weight,0))),0) AS avg_completion
+//         FROM courses c
+//         LEFT JOIN (
+//             SELECT a.course_id, am.student_id,
+//                 SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)) AS completed_weight
+//             FROM assessments a
+//             JOIN assessment_marks am ON am.assessment_id = a.id
+//             GROUP BY a.course_id, am.student_id
+//         ) sub ON sub.course_id = c.id
+//         LEFT JOIN (
+//             SELECT f.course_id, f.student_id, (0.3 * f.final_mark) AS final_weight
+//             FROM final_exams f
+//         ) fe ON fe.course_id = c.id AND fe.student_id = sub.student_id
+//         GROUP BY c.course_name
+//     ")->fetchAll();
+
+//     // === LINE: avg final marks by course
+//     $lineData = $db->query("
+//         SELECT c.course_name, COALESCE(AVG(f.final_mark),0) AS avg_final_mark
+//         FROM courses c
+//         LEFT JOIN final_exams f ON f.course_id = c.id
+//         GROUP BY c.course_name
+//     ")->fetchAll();
+
+//     // === TOP STUDENTS by completion
+//     $topStudents = $db->query("
+//         SELECT u.name AS student_name, u.matric_number,
+//             COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) AS assessment_weight,
+//             COALESCE(MAX(0.3 * f.final_mark),0) AS final_weight,
+//             COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) + COALESCE(MAX(0.3 * f.final_mark),0) AS total_completion
+//         FROM users u
+//         LEFT JOIN course_user cu ON cu.user_id = u.id
+//         LEFT JOIN assessments a ON a.course_id = cu.course_id
+//         LEFT JOIN assessment_marks am ON am.assessment_id = a.id AND am.student_id = u.id
+//         LEFT JOIN final_exams f ON f.student_id = u.id AND f.course_id = cu.course_id
+//         WHERE cu.role = 'student'
+//         GROUP BY u.id, u.name, u.matric_number
+//         ORDER BY total_completion DESC
+//         LIMIT 5
+//     ")->fetchAll();
+
+//     // === DOUGHNUT: completion brackets
+//     $bracketCounts = [
+//         '0-25%' => 0,
+//         '26-50%' => 0,
+//         '51-75%' => 0,
+//         '76-100%' => 0
+//     ];
+
+//     $allStudents = $db->query("
+//         SELECT u.id AS student_id,
+//             COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) AS assessment_weight,
+//             COALESCE(MAX(0.3 * f.final_mark),0) AS final_weight
+//         FROM users u
+//         LEFT JOIN course_user cu ON cu.user_id = u.id
+//         LEFT JOIN assessments a ON a.course_id = cu.course_id
+//         LEFT JOIN assessment_marks am ON am.assessment_id = a.id AND am.student_id = u.id
+//         LEFT JOIN final_exams f ON f.student_id = u.id AND f.course_id = cu.course_id
+//         WHERE cu.role = 'student'
+//         GROUP BY u.id
+//     ")->fetchAll();
+
+//     foreach ($allStudents as $s) {
+//         $total = ($s['assessment_weight'] ?? 0) + ($s['final_weight'] ?? 0);
+//         if ($total <= 25) $bracketCounts['0-25%']++;
+//         else if ($total <= 50) $bracketCounts['26-50%']++;
+//         else if ($total <= 75) $bracketCounts['51-75%']++;
+//         else $bracketCounts['76-100%']++;
+//     }
+
+//     // === SUMMARY AVG
+//     $totalCompletionSum = 0;
+//     foreach ($allStudents as $s) {
+//         $totalCompletionSum += ($s['assessment_weight'] ?? 0) + ($s['final_weight'] ?? 0);
+//     }
+//     $avgCompletion = count($allStudents) ? ($totalCompletionSum / count($allStudents)) : 0;
+
+//     $avgFinalMark = $db->query("SELECT COALESCE(AVG(final_mark),0) AS avg FROM final_exams")->fetch()['avg'];
+
+//     // === RESPONSE JSON
+//     $response->getBody()->write(json_encode([
+//         "summary" => [
+//             "total_students" => intval($totalStudents),
+//             "total_assessments" => intval($totalAssessments),
+//             "total_remarks" => intval($totalRemarks),
+//             "avg_completion" => round($avgCompletion,1),
+//             "avg_final_mark" => round($avgFinalMark,1)
+//         ],
+//         "pieData" => $pieData,
+//         "barData" => $barData,
+//         "lineData" => $lineData,
+//         "topStudents" => $topStudents,
+//         "doughnutData" => $bracketCounts
+//     ]));
+
+//     return $response->withHeader('Content-Type', 'application/json');
+// });
+
+// Your new analytics route with double 's'
+    $group->get('/analyticss', function ($request, $response) use ($pdo) {
+    // === TOTALS
+    $totalStudents = $pdo->query("
+        SELECT COUNT(DISTINCT cu.user_id) AS count
+        FROM course_user cu
+        JOIN users u ON u.id = cu.user_id
+        WHERE cu.role = 'student' AND u.matric_number IS NOT NULL
+    ")->fetch()['count'];
+
+    $totalAssessments = $pdo->query("SELECT COUNT(*) AS count FROM assessments")->fetch()['count'];
+    $totalRemarks = $pdo->query("SELECT COUNT(*) AS count FROM remark_requests")->fetch()['count'];
+
+    // === PIE: students by course
+    $pieDataRaw = $pdo->query("
+        SELECT c.course_name, COUNT(cu.user_id) AS student_count
+        FROM course_user cu
+        JOIN courses c ON c.id = cu.course_id
+        WHERE cu.role = 'student'
+        GROUP BY c.course_name
+    ")->fetchAll();
+
+    $pieData = array_map(function($p) {
+        return [
+            "course_name" => $p["course_name"],
+            "student_count" => intval($p["student_count"])
+        ];
+    }, $pieDataRaw);
+
+    // === BAR: avg completion by course
+    $barDataRaw = $pdo->query("
+        SELECT c.course_name, 
+            COALESCE(AVG((sub.completed_weight + COALESCE(fe.final_weight,0))),0) AS avg_completion
+        FROM courses c
+        LEFT JOIN (
+            SELECT a.course_id, am.student_id,
+                SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)) AS completed_weight
+            FROM assessments a
+            JOIN marks am ON am.assessment_id = a.id
+            GROUP BY a.course_id, am.student_id
+        ) sub ON sub.course_id = c.id
+        LEFT JOIN (
+            SELECT f.course_id, f.student_id, (0.3 * f.final_mark) AS final_weight
+            FROM final_exams f
+        ) fe ON fe.course_id = c.id AND fe.student_id = sub.student_id
+        GROUP BY c.course_name
+    ")->fetchAll();
+
+    $barData = array_map(function($b) {
+        return [
+            "course_name" => $b["course_name"],
+            "avg_completion" => floatval($b["avg_completion"])
+        ];
+    }, $barDataRaw);
+
+    // === LINE: avg final marks by course
+    $lineDataRaw = $pdo->query("
+        SELECT c.course_name, COALESCE(AVG(f.final_mark),0) AS avg_final_mark
+        FROM courses c
+        LEFT JOIN final_exams f ON f.course_id = c.id
+        GROUP BY c.course_name
+    ")->fetchAll();
+
+    $lineData = array_map(function($l) {
+        return [
+            "course_name" => $l["course_name"],
+            "avg_final_mark" => floatval($l["avg_final_mark"])
+        ];
+    }, $lineDataRaw);
+
+    // === TOP STUDENTS
+    $topStudentsRaw = $pdo->query("
+        SELECT u.name AS student_name, u.matric_number,
+            COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) AS assessment_weight,
+            COALESCE(MAX(0.3 * f.final_mark),0) AS final_weight,
+            COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) + COALESCE(MAX(0.3 * f.final_mark),0) AS total_completion
+        FROM users u
+        LEFT JOIN course_user cu ON cu.user_id = u.id
+        LEFT JOIN assessments a ON a.course_id = cu.course_id
+        LEFT JOIN marks am ON am.assessment_id = a.id AND am.student_id = u.id
+        LEFT JOIN final_exams f ON f.student_id = u.id AND f.course_id = cu.course_id
+        WHERE cu.role = 'student'
+        GROUP BY u.id, u.name, u.matric_number
+        ORDER BY total_completion DESC
+        LIMIT 5
+    ")->fetchAll();
+
+    $topStudents = array_map(function($s) {
+        return [
+            "student_name" => $s["student_name"],
+            "matric_number" => $s["matric_number"],
+            "assessment_weight" => floatval($s["assessment_weight"]),
+            "final_weight" => floatval($s["final_weight"]),
+            "total_completion" => floatval($s["total_completion"])
+        ];
+    }, $topStudentsRaw);
+
+    // === DOUGHNUT: brackets
+    $bracketCounts = [
+        '0-25%' => 0,
+        '26-50%' => 0,
+        '51-75%' => 0,
+        '76-100%' => 0
+    ];
+
+    $allStudents = $pdo->query("
+        SELECT u.id AS student_id,
+            COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) AS assessment_weight,
+            COALESCE(MAX(0.3 * f.final_mark),0) AS final_weight
+        FROM users u
+        LEFT JOIN course_user cu ON cu.user_id = u.id
+        LEFT JOIN assessments a ON a.course_id = cu.course_id
+        LEFT JOIN marks am ON am.assessment_id = a.id AND am.student_id = u.id
+        LEFT JOIN final_exams f ON f.student_id = u.id AND f.course_id = cu.course_id
+        WHERE cu.role = 'student'
+        GROUP BY u.id
+    ")->fetchAll();
+
+    $totalCompletionSum = 0;
+    foreach ($allStudents as $s) {
+        $total = ($s['assessment_weight'] ?? 0) + ($s['final_weight'] ?? 0);
+        $totalCompletionSum += $total;
+        if ($total <= 25) $bracketCounts['0-25%']++;
+        else if ($total <= 50) $bracketCounts['26-50%']++;
+        else if ($total <= 75) $bracketCounts['51-75%']++;
+        else $bracketCounts['76-100%']++;
+    }
+
+    $avgCompletion = count($allStudents) ? ($totalCompletionSum / count($allStudents)) : 0;
+    $avgFinalMark = $pdo->query("SELECT COALESCE(AVG(final_mark),0) AS avg FROM final_exams")->fetch()['avg'];
+
+    $response->getBody()->write(json_encode([
+        "summary" => [
+            "total_students" => intval($totalStudents),
+            "total_assessments" => intval($totalAssessments),
+            "total_remarks" => intval($totalRemarks),
+            "avg_completion" => round($avgCompletion,1),
+            "avg_final_mark" => round($avgFinalMark,1)
+        ],
+        "pieData" => $pieData,
+        "barData" => $barData,
+        "lineData" => $lineData,
+        "topStudents" => $topStudents,
+        "doughnutData" => $bracketCounts
+    ]));
+
+    return $response->withHeader('Content-Type', 'application/json');
+});
 
 
+    // $group->get('/progress', function ($request, $response) {
 
-    $group->get('/progress', function ($request, $response) {
-
-        return $response;
-    });
+    //     return $response;
+    // });
 })->add($authMiddleware);
