@@ -5,6 +5,7 @@ use Psr\Http\Message\ResponseInterface as Response;
 
 
 /* ADVISOR ROUTES */
+
 $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
 
     $group->get('/adviseelist', function ($request, $response) use ($pdo) {
@@ -149,7 +150,7 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
 
     $group->get('/notes', function ($request, $response) use ($pdo) {
         $params = $request->getQueryParams();
-        $student_id = $params['student_id'] ?? null;
+        $student_id = $params['student_id'] ?? null; // This is matric number from frontend
         $course_id = $params['course_id'] ?? null;
 
         if (!$student_id) {
@@ -157,8 +158,18 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
                 ->write(json_encode(['error' => 'student_id is required']));
         }
 
+        // Look up internal user ID from matric number
+        $stmt = $pdo->prepare("SELECT id FROM users WHERE matric_number = ? AND role = 'student'");
+        $stmt->execute([$student_id]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$user) {
+            return $response->withStatus(404)->withHeader('Content-Type', 'application/json')
+                ->write(json_encode(['error' => 'Student not found']));
+        }
+        $internal_id = $user['id'];
+
         $sql = "SELECT * FROM advisor_notes WHERE student_id = ?";
-        $args = [$student_id];
+        $args = [$internal_id];
         if ($course_id) {
             $sql .= " AND course_id = ?";
             $args[] = $course_id;
@@ -194,18 +205,23 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
+    $group->delete('/notes/{note_id}', function ($request, $response, $args) use ($pdo) {
+        $note_id = $args['note_id'];
+        $stmt = $pdo->prepare("DELETE FROM advisor_notes WHERE id = ?");
+        $stmt->execute([$note_id]);
+        $success = $stmt->rowCount() > 0;
+        $response->getBody()->write(json_encode(['success' => $success]));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
     // POST insert advisor note by matric number and course id
     $group->post('/notes-by-matric/{matric_number}/{course_id}', function ($request, $response, $args) use ($pdo) {
-        session_start();
-        $$advisor_id = 1; // hardcode your advisor user id
+        $advisor_id = $_SESSION['user']['id'];
 
-        if (!$advisor_id) {
-            $response->getBody()->write(json_encode(['error' => 'Not authenticated']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
-        }
         $matric_number = $args['matric_number'];
         $course_id = $args['course_id'];
         $data = json_decode($request->getBody()->getContents(), true);
+
         $note = $data['note'] ?? null;
         $meeting_date = $data['meeting_date'] ?? null;
 
@@ -218,66 +234,92 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
         $stmt = $pdo->prepare("SELECT id FROM users WHERE matric_number = ? AND role = 'student'");
         $stmt->execute([$matric_number]);
         $student = $stmt->fetch();
+
         if (!$student) {
             $response->getBody()->write(json_encode(['error' => 'Student with given matric number not found']));
             return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
         }
+
         $student_id = $student['id'];
 
-        // Insert advisor note
-        $stmt = $pdo->prepare("INSERT INTO advisor_notes (advisor_id, student_id, course_id, note, meeting_date, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
-        $stmt->execute([$advisor_id, $student_id, $course_id, $note, $meeting_date]);
+        try {
+            // Insert advisor note
+            $stmt = $pdo->prepare("
+            INSERT INTO advisor_notes 
+            (advisor_id, student_id, course_id, note, meeting_date, created_at) 
+            VALUES (?, ?, ?, ?, ?, NOW())
+        ");
+            $stmt->execute([$advisor_id, $student_id, $course_id, $note, $meeting_date]);
 
-        $response->getBody()->write(json_encode(['success' => true]));
-        return $response->withHeader('Content-Type', 'application/json');
+            $response->getBody()->write(json_encode(['success' => true]));
+            return $response->withHeader('Content-Type', 'application/json');
+        } catch (PDOException $e) {
+            $response->getBody()->write(json_encode(['error' => 'Database error: ' . $e->getMessage()]));
+            return $response->withHeader('Content-Type', 'application/json')->withStatus(500);
+        }
     });
 
-   // Get all courses a student has participated in (based on marks)
-$group->get('/student-courses', function ($request, $response) use ($pdo) {
-  $params = $request->getQueryParams();
-  $student_id = $params['student_id'] ?? null;
 
-  if (!$student_id) {
-      return $response
-          ->withHeader('Content-Type', 'application/json')
-          ->withStatus(400)
-          ->write(json_encode(['error' => 'student_id is required']));
-  }
+    // Get all courses a student has participated in (based on marks)
+    $group->get('/student-courses', function ($request, $response) use ($pdo) {
+        $params = $request->getQueryParams();
+        $matric_no = $params['student_id'] ?? null;
 
-  try {
-      $stmt = $pdo->prepare("
-          SELECT DISTINCT
-              c.id,
-              c.course_name,
-              c.course_code,
-              c.semester,
-              c.year
-          FROM
-              marks m
-          INNER JOIN
-              assessments a ON m.assessment_id = a.id
-          INNER JOIN
-              courses c ON a.course_id = c.id
-          WHERE
-              m.student_id = ?
-          ORDER BY
-              c.year DESC,
-              c.semester DESC,
-              c.course_code
-      ");
+        if (!$matric_no) {
+            $response->getBody()->write(json_encode(['error' => 'student_id (matric number) is required']));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withStatus(400);
+        }
 
-      $stmt->execute([$student_id]);
-      $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        try {
+            // Get the user ID from users table using matric number
+            $stmt = $pdo->prepare("SELECT id FROM users WHERE matric_number = ?");
+            $stmt->execute([$matric_no]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-      return $response
-          ->withHeader('Content-Type', 'application/json')
-          ->write(json_encode($courses));
-  } catch (PDOException $e) {
-      return $response
-          ->withHeader('Content-Type', 'application/json')
-          ->withStatus(500)
-          ->write(json_encode(['error' => 'Database error: ' . $e->getMessage()]));
-  }
-});
+            if (!$user) {
+                $response->getBody()->write(json_encode(['error' => 'Student not found']));
+                return $response
+                    ->withHeader('Content-Type', 'application/json')
+                    ->withStatus(404);
+            }
 
+            $user_id = $user['id'];
+
+            // Fetch courses
+            $stmt = $pdo->prepare("
+            SELECT DISTINCT
+                c.id,
+                c.course_name,
+                c.course_code,
+                c.semester,
+                c.year
+            FROM
+                marks m
+            INNER JOIN
+                assessments a ON m.assessment_id = a.id
+            INNER JOIN
+                courses c ON a.course_id = c.id
+            WHERE
+                m.student_id = ?
+            ORDER BY
+                c.year DESC,
+                c.semester DESC,
+                c.course_code
+        ");
+
+            $stmt->execute([$user_id]);
+            $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $response->getBody()->write(json_encode($courses));
+            return $response
+                ->withHeader('Content-Type', 'application/json');
+        } catch (PDOException $e) {
+            $response->getBody()->write(json_encode(['error' => 'Database error: ' . $e->getMessage()]));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withStatus(500);
+        }
+    });
 })->add($authMiddleware);
