@@ -509,15 +509,17 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
 
     $group->get('/final-exams', function ($request, $response) use ($pdo) {
         $stmt = $pdo->query("
-                SELECT u.id AS student_id, u.name, u.matric_number,
-                    c.id AS course_id, c.course_code, c.course_name,
-                    fe.final_mark
-                FROM final_exams fe
-                JOIN users u ON fe.student_id = u.id
-                JOIN courses c ON fe.course_id = c.id
-                ORDER BY c.course_code, u.name
-            ");
+            SELECT u.id AS student_id, u.name, u.matric_number,
+                c.id AS course_id, c.course_code, c.course_name,
+                fe.final_mark, fe.gpa
+            FROM final_exams fe
+            JOIN users u ON fe.student_id = u.id
+            JOIN courses c ON fe.course_id = c.id
+            ORDER BY c.course_code, u.name
+
+        ");
         $students = $stmt->fetchAll();
+
         $response->getBody()->write(json_encode($students));
         return $response->withHeader('Content-Type', 'application/json');
     });
@@ -528,14 +530,15 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         $course_id = $args['course_id'];
         $student_id = $args['student_id'];
 
-        // Get course, student and final exam mark
+        // Get course, student and final exam mark + GPA
         $stmt = $pdo->prepare("
-            SELECT u.name, u.matric_number, c.course_name, fe.final_mark
+            SELECT u.name, u.matric_number, c.course_name, fe.final_mark, fe.gpa
             FROM users u
             CROSS JOIN courses c
             LEFT JOIN final_exams fe ON fe.student_id = u.id AND fe.course_id = c.id
             WHERE u.id = ? AND c.id = ?
         ");
+
         $stmt->execute([$student_id, $course_id]);
         $data = $stmt->fetch();
 
@@ -553,8 +556,10 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
             'name' => $data['name'] ?? '',
             'matric_number' => $data['matric_number'] ?? '',
             'final_mark' => $data['final_mark'] ?? 0,
+            'gpa' => $data['gpa'] ?? 0,
             'assessments' => $assessments
         ]));
+
         return $response->withHeader('Content-Type', 'application/json');
     });
 
@@ -564,9 +569,18 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         $course_id = $data['course_id'];
         $student_id = $data['student_id'];
         $final_mark = $data['final_mark'];
-        $final_exam_weight = $data['final_exam_weight']; // e.g. 30
+        $final_exam_weight = $data['final_exam_weight'] ?? 30; // fallback if not passed
 
-        // Get current total assessment weights
+        // Calculate GPA based on final_mark
+        if ($final_mark >= 85) $gpa = 4.0;
+        elseif ($final_mark >= 75) $gpa = 3.5;
+        elseif ($final_mark >= 65) $gpa = 3.0;
+        elseif ($final_mark >= 55) $gpa = 2.5;
+        elseif ($final_mark >= 45) $gpa = 2.0;
+        elseif ($final_mark >= 35) $gpa = 1.5;
+        else $gpa = 1.0;
+
+        // Check total weight
         $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ?");
         $stmt->execute([$course_id]);
         $totalAssessmentWeight = $stmt->fetchColumn() ?: 0;
@@ -579,23 +593,29 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
             return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
         }
 
-        // Otherwise upsert as usual
+        // Upsert final_exams with gpa
         $stmt = $pdo->prepare("SELECT id FROM final_exams WHERE course_id = ? AND student_id = ?");
         $stmt->execute([$course_id, $student_id]);
         $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($existing) {
-            $stmt = $pdo->prepare("UPDATE final_exams SET final_mark = ?, updated_at = NOW() WHERE course_id = ? AND student_id = ?");
-            $stmt->execute([$final_mark, $course_id, $student_id]);
+            $stmt = $pdo->prepare("UPDATE final_exams 
+                SET final_mark = ?, gpa = ?, updated_at = NOW() 
+                WHERE course_id = ? AND student_id = ?");
+            $stmt->execute([$final_mark, $gpa, $course_id, $student_id]);
         } else {
-            $stmt = $pdo->prepare("INSERT INTO final_exams (course_id, student_id, final_mark, created_at, updated_at)
-                VALUES (?, ?, ?, NOW(), NOW())");
-            $stmt->execute([$course_id, $student_id, $final_mark]);
+            $stmt = $pdo->prepare("INSERT INTO final_exams 
+                (course_id, student_id, final_mark, gpa, created_at, updated_at)
+                VALUES (?, ?, ?, ?, NOW(), NOW())");
+            $stmt->execute([$course_id, $student_id, $final_mark, $gpa]);
         }
 
         $response->getBody()->write(json_encode(['success' => true]));
         return $response->withHeader('Content-Type', 'application/json');
     });
+
+
+
 
     // ✅ Delete final mark
     $group->delete('/final-exams/{course_id}/{student_id}', function ($request, $response, $args) use ($pdo) {
@@ -623,7 +643,8 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
             c.id AS course_id,
             c.course_code,
             c.course_name,
-            fe.final_mark
+            fe.final_mark,
+            fe.gpa
         FROM final_exams fe
         JOIN users u ON fe.student_id = u.id
         JOIN courses c ON fe.course_id = c.id
@@ -633,6 +654,7 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         $response->getBody()->write(json_encode($students));
         return $response->withHeader('Content-Type', 'application/json');
     });
+
 
 
 
@@ -684,7 +706,7 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
     });
 
     //progress overview
-$group->get('/progress', function ($request, $response) use ($pdo) {
+    $group->get('/progress', function ($request, $response) use ($pdo) {
     $sql = "
         SELECT 
             u.id AS student_id,
@@ -696,6 +718,7 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
             COUNT(DISTINCT m.id) AS marks_count,
             COALESCE(SUM(m.mark_obtained), 0) AS total_marks,
             fe.final_mark,
+            fe.gpa,
             COUNT(DISTINCT rr.id) AS remark_count,
             COALESCE(SUM(DISTINCT a.weight), 0) + 
                 CASE WHEN fe.final_mark IS NOT NULL THEN 30 ELSE 0 END AS total_weight_completed
@@ -707,16 +730,17 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
         LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = u.id
         LEFT JOIN remark_requests rr ON rr.assessment_id = a.id AND rr.student_id = u.id
         WHERE cu.role = 'student'
-        GROUP BY u.id, u.name, u.matric_number, c.id, c.course_name, fe.final_mark
+        GROUP BY u.id, u.name, u.matric_number, c.id, c.course_name, fe.final_mark, fe.gpa
         ORDER BY c.course_name, u.name
     ";
 
-    $stmt = $pdo->query($sql);
-    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $response->getBody()->write(json_encode($data));
-    return $response->withHeader('Content-Type', 'application/json');
-});
+        $stmt = $pdo->query($sql);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $response->getBody()->write(json_encode($data));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
 
 
 //analytics
@@ -917,7 +941,7 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
 //     return $response->withHeader('Content-Type', 'application/json');
 // });
 
-// Your new analytics route with double 's'
+    // Your new analytics route with double 's'
     $group->get('/analyticss', function ($request, $response) use ($pdo) {
     // === TOTALS
     $totalStudents = $pdo->query("
@@ -987,12 +1011,28 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
         ];
     }, $lineDataRaw);
 
+    // === GPA: avg GPA by course
+    $gpaDataRaw = $pdo->query("
+        SELECT c.course_name, COALESCE(AVG(f.gpa),0) AS avg_gpa
+        FROM courses c
+        LEFT JOIN final_exams f ON f.course_id = c.id
+        GROUP BY c.course_name
+    ")->fetchAll();
+
+    $gpaData = array_map(function($g) {
+        return [
+            "course_name" => $g["course_name"],
+            "avg_gpa" => floatval($g["avg_gpa"])
+        ];
+    }, $gpaDataRaw);
+
     // === TOP STUDENTS
     $topStudentsRaw = $pdo->query("
         SELECT u.name AS student_name, u.matric_number,
             COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) AS assessment_weight,
             COALESCE(MAX(0.3 * f.final_mark),0) AS final_weight,
-            COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) + COALESCE(MAX(0.3 * f.final_mark),0) AS total_completion
+            COALESCE(SUM((a.weight / 100) * (am.mark_obtained / a.max_mark * 100)),0) + COALESCE(MAX(0.3 * f.final_mark),0) AS total_completion,
+            COALESCE(MAX(f.gpa), 0) AS gpa
         FROM users u
         LEFT JOIN course_user cu ON cu.user_id = u.id
         LEFT JOIN assessments a ON a.course_id = cu.course_id
@@ -1004,15 +1044,16 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
         LIMIT 5
     ")->fetchAll();
 
-    $topStudents = array_map(function($s) {
-        return [
-            "student_name" => $s["student_name"],
-            "matric_number" => $s["matric_number"],
-            "assessment_weight" => floatval($s["assessment_weight"]),
-            "final_weight" => floatval($s["final_weight"]),
-            "total_completion" => floatval($s["total_completion"])
-        ];
-    }, $topStudentsRaw);
+   $topStudents = array_map(function($s) {
+    return [
+        "student_name" => $s["student_name"],
+        "matric_number" => $s["matric_number"],
+        "assessment_weight" => floatval($s["assessment_weight"]),
+        "final_weight" => floatval($s["final_weight"]),
+        "total_completion" => floatval($s["total_completion"]),
+        "gpa" => floatval($s["gpa"])
+    ];
+}, $topStudentsRaw);
 
     // === DOUGHNUT: brackets
     $bracketCounts = [
@@ -1047,6 +1088,7 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
 
     $avgCompletion = count($allStudents) ? ($totalCompletionSum / count($allStudents)) : 0;
     $avgFinalMark = $pdo->query("SELECT COALESCE(AVG(final_mark),0) AS avg FROM final_exams")->fetch()['avg'];
+    $avgGpa = $pdo->query("SELECT COALESCE(AVG(gpa),0) AS avg FROM final_exams")->fetch()['avg'];
 
     $response->getBody()->write(json_encode([
         "summary" => [
@@ -1054,18 +1096,19 @@ $group->get('/progress', function ($request, $response) use ($pdo) {
             "total_assessments" => intval($totalAssessments),
             "total_remarks" => intval($totalRemarks),
             "avg_completion" => round($avgCompletion,1),
-            "avg_final_mark" => round($avgFinalMark,1)
+            "avg_final_mark" => round($avgFinalMark,1),
+            "avg_gpa" => round($avgGpa,2),
         ],
         "pieData" => $pieData,
         "barData" => $barData,
         "lineData" => $lineData,
+        "gpaData" => $gpaData,
         "topStudents" => $topStudents,
         "doughnutData" => $bracketCounts
     ]));
 
     return $response->withHeader('Content-Type', 'application/json');
 });
-
 
     // $group->get('/progress', function ($request, $response) {
 
