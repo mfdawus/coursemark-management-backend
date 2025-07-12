@@ -322,4 +322,61 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
                 ->withStatus(500);
         }
     });
+
+    $group->get('/rankings', function ($request, $response) use ($pdo) {
+        // Get all courses (include semester and year)
+        $stmt = $pdo->query("
+            SELECT c.id, c.course_code, c.course_name, c.semester, c.year
+            FROM courses c
+            ORDER BY c.course_code
+        ");
+        $courses = $stmt->fetchAll();
+
+        $results = [];
+
+        foreach ($courses as $course) {
+            $course_id = $course['id'];
+
+            // Get all students' total marks in the course
+            $stmt2 = $pdo->prepare("
+                SELECT 
+                    u.id as student_id,
+                    u.name,
+                    COALESCE(SUM((m.mark_obtained / a.max_mark) * a.weight), 0) +
+                    COALESCE(f.final_mark, 0) AS total_mark
+                FROM users u
+                JOIN course_user cu ON cu.user_id = u.id
+                JOIN assessments a ON a.course_id = cu.course_id
+                LEFT JOIN marks m ON m.assessment_id = a.id AND m.student_id = u.id
+                LEFT JOIN final_exams f ON f.course_id = cu.course_id AND f.student_id = u.id
+                WHERE cu.course_id = ? AND cu.role = 'student'
+                GROUP BY u.id, u.name, f.final_mark
+                ORDER BY total_mark DESC
+            ");
+            $stmt2->execute([$course_id]);
+            $students = $stmt2->fetchAll();
+
+            // Class average
+            $totalScores = array_column($students, 'total_mark');
+            $average = count($totalScores) ? array_sum($totalScores) / count($totalScores) : 0;
+
+            $results[] = [
+                'course_code' => $course['course_code'],
+                'course_name' => $course['course_name'],
+                'semester' => $course['semester'],
+                'year' => $course['year'],
+                'total_students' => count($students),
+                'class_average' => round($average, 2),
+                'students' => array_map(function ($s) {
+                    return [
+                        'name' => $s['name'],
+                        'total_mark' => round($s['total_mark'], 2)
+                    ];
+                }, $students)
+            ];
+        }
+
+        $response->getBody()->write(json_encode($results));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
 })->add($authMiddleware);
