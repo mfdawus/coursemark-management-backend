@@ -396,36 +396,6 @@ $app->group('/api/student', function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-    $group->get('/remarks', function ($request, $response) use ($pdo) {
-
-        if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'student') {
-            return $response->withStatus(401);
-        }
-
-        $student_id = $_SESSION['user']['id'];
-
-        $stmt = $pdo->prepare("
-            SELECT 
-                an.id,
-                an.note,
-                an.meeting_date,
-                an.created_at,
-                u.name AS advisor_name,
-                c.course_code,
-                c.course_name
-            FROM advisor_notes an
-            LEFT JOIN users u ON u.id = an.advisor_id
-            LEFT JOIN courses c ON c.id = an.course_id
-            WHERE an.student_id = ?
-            ORDER BY an.created_at DESC
-        ");
-        $stmt->execute([$student_id]);
-        $notes = $stmt->fetchAll();
-
-        $response->getBody()->write(json_encode($notes));
-        return $response->withHeader('Content-Type', 'application/json');
-    });
-
     $group->get('/notifications', function ($request, $response) use ($pdo) {
         if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'student') {
             return $response->withStatus(401);
@@ -571,6 +541,48 @@ $app->group('/api/student', function (RouteCollectorProxy $group) use ($pdo) {
         $profile['average_final_mark'] = $stats['avg_mark'];
 
         $response->getBody()->write(json_encode($profile));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+
+    $group->get('/progress', function ($request, $response) use ($pdo) {
+        $student_id = $_SESSION['user']['id'];
+
+        $sql = "
+        SELECT 
+            u.id AS student_id,
+            u.name AS student_name,
+            u.matric_number,
+            c.id AS course_id,
+            c.course_name,
+            COUNT(DISTINCT a.id) AS assessment_count,
+            COUNT(DISTINCT m.id) AS marks_count,
+            COALESCE(SUM(m.mark_obtained), 0) AS total_marks,
+            fe.final_mark,
+            fe.gpa,
+            COUNT(DISTINCT rr.id) AS remark_count,
+            -- Total progress calculation
+            (
+              COALESCE(SUM(CASE WHEN m.id IS NOT NULL THEN a.weight ELSE 0 END), 0)
+              + CASE WHEN fe.final_mark IS NOT NULL THEN 30 ELSE 0 END
+            ) AS total_weight_completed
+        FROM course_user cu
+        JOIN users u ON cu.user_id = u.id
+        JOIN courses c ON cu.course_id = c.id
+        LEFT JOIN assessments a ON a.course_id = c.id
+        LEFT JOIN marks m ON m.assessment_id = a.id AND m.student_id = u.id
+        LEFT JOIN final_exams fe ON fe.course_id = c.id AND fe.student_id = u.id
+        LEFT JOIN remark_requests rr ON rr.assessment_id = a.id AND rr.student_id = u.id
+        WHERE u.id = :student_id
+        GROUP BY u.id, u.name, u.matric_number, c.id, c.course_name, fe.final_mark, fe.gpa
+        ORDER BY c.course_name, u.name
+    ";
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(['student_id' => $student_id]);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $response->getBody()->write(json_encode($data));
         return $response->withHeader('Content-Type', 'application/json');
     });
 })->add($authMiddleware);
