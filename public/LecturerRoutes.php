@@ -340,7 +340,14 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
 
     // ===============================
     // POST: Create assessment with weight check (max 70%)
-    $group->post('/assessments', function ($request, $response) use ($pdo) {
+   $group->post('/assessments', function ($request, $response) use ($pdo) {
+
+        if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'lecturer') {
+            return $response->withStatus(401)->write('Unauthorized');
+        }
+
+        $user_id = $_SESSION['user']['id'];
+
         $data = $request->getParsedBody();
         $course_id = $data['course_id'];
 
@@ -363,7 +370,7 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
             $data['type'],
             $data['max_mark'],
             $data['weight'],
-            $data['created_by']
+            $user_id
         ]);
 
         $response->getBody()->write(json_encode(['success' => true]));
@@ -563,7 +570,7 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-    // ✅ Save or update final mark
+     // ✅ Save or update final mark
     $group->post('/final-exams', function ($request, $response) use ($pdo) {
         $data = $request->getParsedBody();
         $course_id = $data['course_id'];
@@ -613,6 +620,8 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
         $response->getBody()->write(json_encode(['success' => true]));
         return $response->withHeader('Content-Type', 'application/json');
     });
+
+
 
 
 
