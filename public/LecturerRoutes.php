@@ -572,56 +572,69 @@ $app->group('/api/lecturer', function (RouteCollectorProxy $group) use ($pdo) {
 
      // ✅ Save or update final mark
     $group->post('/final-exams', function ($request, $response) use ($pdo) {
-        $data = $request->getParsedBody();
-        $course_id = $data['course_id'];
-        $student_id = $data['student_id'];
-        $final_mark = $data['final_mark'];
-        $final_exam_weight = $data['final_exam_weight'] ?? 30; // fallback if not passed
+    $data = $request->getParsedBody();
+    $course_id = $data['course_id'];
+    $student_id = $data['student_id'];
+    $final_mark = $data['final_mark'];
+    $final_exam_weight = $data['final_exam_weight'] ?? 30;
 
-        // Calculate GPA based on final_mark
-        if ($final_mark >= 85) $gpa = 4.0;
-        elseif ($final_mark >= 75) $gpa = 3.5;
-        elseif ($final_mark >= 65) $gpa = 3.0;
-        elseif ($final_mark >= 55) $gpa = 2.5;
-        elseif ($final_mark >= 45) $gpa = 2.0;
-        elseif ($final_mark >= 35) $gpa = 1.5;
-        else $gpa = 1.0;
+    // Calculate GPA
+    if ($final_mark >= 85) $gpa = 4.0;
+    elseif ($final_mark >= 75) $gpa = 3.5;
+    elseif ($final_mark >= 65) $gpa = 3.0;
+    elseif ($final_mark >= 55) $gpa = 2.5;
+    elseif ($final_mark >= 45) $gpa = 2.0;
+    elseif ($final_mark >= 35) $gpa = 1.5;
+    else $gpa = 1.0;
 
-        // Check total weight
-        $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ?");
-        $stmt->execute([$course_id]);
-        $totalAssessmentWeight = $stmt->fetchColumn() ?: 0;
+    // Check total weight
+    $stmt = $pdo->prepare("SELECT SUM(weight) as total_weight FROM assessments WHERE course_id = ?");
+    $stmt->execute([$course_id]);
+    $totalAssessmentWeight = $stmt->fetchColumn() ?: 0;
 
-        if ($totalAssessmentWeight + $final_exam_weight > 100) {
-            $response->getBody()->write(json_encode([
-                'success' => false,
-                'message' => 'Combined weight exceeds 100%. Current assessments weight: ' . $totalAssessmentWeight . '%.'
-            ]));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
-        }
+    if ($totalAssessmentWeight + $final_exam_weight > 100) {
+        $response->getBody()->write(json_encode([
+            'success' => false,
+            'message' => 'Combined weight exceeds 100%. Current assessments weight: ' . $totalAssessmentWeight . '%.'
+        ]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+    }
 
-        // Upsert final_exams with gpa
-        $stmt = $pdo->prepare("SELECT id FROM final_exams WHERE course_id = ? AND student_id = ?");
-        $stmt->execute([$course_id, $student_id]);
-        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+    // Get course name for better notification
+    $stmt = $pdo->prepare("SELECT course_name FROM courses WHERE id = ?");
+    $stmt->execute([$course_id]);
+    $course = $stmt->fetch(PDO::FETCH_ASSOC);
+    $courseName = $course ? $course['course_name'] : "Course ID $course_id";
 
-        if ($existing) {
-            $stmt = $pdo->prepare("UPDATE final_exams 
-                SET final_mark = ?, gpa = ?, updated_at = NOW() 
-                WHERE course_id = ? AND student_id = ?");
-            $stmt->execute([$final_mark, $gpa, $course_id, $student_id]);
-        } else {
-            $stmt = $pdo->prepare("INSERT INTO final_exams 
-                (course_id, student_id, final_mark, gpa, created_at, updated_at)
-                VALUES (?, ?, ?, ?, NOW(), NOW())");
-            $stmt->execute([$course_id, $student_id, $final_mark, $gpa]);
-        }
+    // Upsert final_exams
+    $stmt = $pdo->prepare("SELECT id FROM final_exams WHERE course_id = ? AND student_id = ?");
+    $stmt->execute([$course_id, $student_id]);
+    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        $response->getBody()->write(json_encode(['success' => true]));
-        return $response->withHeader('Content-Type', 'application/json');
-    });
+    if ($existing) {
+        $stmt = $pdo->prepare("UPDATE final_exams 
+            SET final_mark = ?, gpa = ?, updated_at = NOW()
+            WHERE course_id = ? AND student_id = ?");
+        $stmt->execute([$final_mark, $gpa, $course_id, $student_id]);
+    } else {
+        $stmt = $pdo->prepare("INSERT INTO final_exams 
+            (course_id, student_id, final_mark, gpa, created_at, updated_at)
+            VALUES (?, ?, ?, ?, NOW(), NOW())");
+        $stmt->execute([$course_id, $student_id, $final_mark, $gpa]);
+    }
 
+    // Insert notification with course name
+    $title = "Final Exam Mark Updated";
+    $message = "Your final exam mark for $courseName has been recorded. GPA: $gpa";
 
+    $stmt = $pdo->prepare("INSERT INTO notifications 
+        (user_id, title, message, is_read, created_at)
+        VALUES (?, ?, ?, 0, NOW())");
+    $stmt->execute([$student_id, $title, $message]);
+
+    $response->getBody()->write(json_encode(['success' => true]));
+    return $response->withHeader('Content-Type', 'application/json');
+});
 
 
 
