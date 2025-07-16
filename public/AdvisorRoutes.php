@@ -13,11 +13,7 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
             SELECT
               u.name AS student_name,
               u.matric_number AS student_id,
-              CASE
-                WHEN u.matric_number LIKE '%ECJH%' THEN 'Software Engineering'
-                WHEN u.matric_number LIKE '%ECRH%' THEN 'Networking'
-                ELSE 'Unknown'
-              END AS program,
+              u.program AS program,
               ROUND(COALESCE((SELECT AVG(gpa) FROM final_exams fe WHERE fe.student_id = u.id), 0), 2) AS cgpa,
               CASE
                 WHEN (SELECT AVG(gpa) FROM final_exams fe WHERE fe.student_id = u.id) >= 3.0 THEN 'Good Standing'
