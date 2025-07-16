@@ -148,6 +148,61 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
         }
     });
 
+    $group->get('/dashboard', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query("
+            SELECT
+                (SELECT COUNT(*) FROM users WHERE role = 'student') AS total_advisees,
+                (SELECT COUNT(*)
+                 FROM (
+                     SELECT student_id, AVG(gpa) AS cgpa
+                     FROM final_exams
+                     GROUP BY student_id
+                 ) AS gpa_stats
+                 WHERE cgpa >= 3.0) AS good_standing,
+                (SELECT COUNT(*)
+                 FROM (
+                     SELECT student_id, AVG(gpa) AS cgpa
+                     FROM final_exams
+                     GROUP BY student_id
+                 ) AS gpa_stats
+                 WHERE cgpa >= 2.0 AND cgpa < 3.0) AS warning,
+                (SELECT COUNT(*)
+                 FROM (
+                     SELECT student_id, AVG(gpa) AS cgpa
+                     FROM final_exams
+                     GROUP BY student_id
+                 ) AS gpa_stats
+                 WHERE cgpa < 2.0) AS probation,
+                (SELECT ROUND(AVG(cgpa), 2)
+                 FROM (
+                     SELECT AVG(gpa) AS cgpa
+                     FROM final_exams
+                     GROUP BY student_id
+                 ) AS avg_cgpa) AS avg_cgpa
+        ");
+        $metrics = $stmt->fetch(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($metrics));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->get('/cgpa-distribution', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query('
+            SELECT
+                SUM(CASE WHEN cgpa >= 3.5 THEN 1 ELSE 0 END) AS excellent,
+                SUM(CASE WHEN cgpa >= 3.0 AND cgpa < 3.5 THEN 1 ELSE 0 END) AS good,
+                SUM(CASE WHEN cgpa >= 2.5 AND cgpa < 3.0 THEN 1 ELSE 0 END) AS average,
+                SUM(CASE WHEN cgpa < 2.5 THEN 1 ELSE 0 END) AS low
+            FROM (
+                SELECT AVG(gpa) AS cgpa
+                FROM final_exams
+                GROUP BY student_id
+            ) AS cgpa_stats
+        ');
+        $buckets = $stmt->fetch(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($buckets));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
     $group->get('/notes', function ($request, $response) use ($pdo) {
         $params = $request->getQueryParams();
         $student_id = $params['student_id'] ?? null; // This is matric number from frontend
@@ -323,6 +378,22 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
         }
     });
 
+    $group->get('/courses', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query("SELECT id, course_code, course_name, semester, year FROM courses ORDER BY year DESC, semester DESC, course_code");
+        $courses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($courses));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->get('/courses/{course_id}/students', function ($request, $response, $args) use ($pdo) {
+        $course_id = $args['course_id'];
+        $stmt = $pdo->prepare("SELECT u.id, u.name, u.matric_number FROM users u JOIN course_user cu ON cu.user_id = u.id WHERE cu.course_id = ? AND cu.role = 'student' ORDER BY u.name");
+        $stmt->execute([$course_id]);
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($students));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
     $group->get('/rankings', function ($request, $response) use ($pdo) {
         // Get all courses (include semester and year)
         $stmt = $pdo->query("
@@ -377,6 +448,61 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
         }
 
         $response->getBody()->write(json_encode($results));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->get('/students-by-course', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query("SELECT c.course_name, COUNT(cu.user_id) AS student_count FROM course_user cu JOIN courses c ON c.id = cu.course_id WHERE cu.role = 'student' GROUP BY c.course_name ORDER BY c.course_name");
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($data));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->get('/avg-cgpa-by-course', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query('
+            SELECT c.course_name, ROUND(AVG(student_cgpa), 2) AS avg_cgpa
+            FROM (
+                SELECT f.course_id, f.student_id, AVG(f.gpa) AS student_cgpa
+                FROM final_exams f
+                GROUP BY f.course_id, f.student_id
+            ) AS per_student
+            JOIN courses c ON c.id = per_student.course_id
+            GROUP BY c.course_name
+            ORDER BY c.course_name
+        ');
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($data));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->get('/top-10-students', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query('
+            SELECT u.name, u.matric_number, ROUND(AVG(f.gpa), 2) AS cgpa
+            FROM users u
+            JOIN final_exams f ON f.student_id = u.id
+            WHERE u.role = "student"
+            GROUP BY u.id, u.name, u.matric_number
+            HAVING COUNT(f.gpa) > 0
+            ORDER BY cgpa DESC
+            LIMIT 10
+        ');
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($students));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    $group->get('/at-risk-students', function ($request, $response) use ($pdo) {
+        $stmt = $pdo->query('
+            SELECT u.name, u.matric_number, ROUND(AVG(f.gpa), 2) AS cgpa
+            FROM users u
+            JOIN final_exams f ON f.student_id = u.id
+            WHERE u.role = "student"
+            GROUP BY u.id, u.name, u.matric_number
+            HAVING cgpa < 2.0
+            ORDER BY cgpa ASC
+        ');
+        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode($students));
         return $response->withHeader('Content-Type', 'application/json');
     });
 })->add($authMiddleware);
