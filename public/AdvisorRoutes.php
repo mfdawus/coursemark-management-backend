@@ -13,55 +13,15 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
             SELECT
               u.name AS student_name,
               u.matric_number AS student_id,
-              'Software Engineering' AS program,
-              ROUND((
-                (
-                  COALESCE((
-                    SELECT AVG(m2.mark_obtained)
-                    FROM marks m2
-                    JOIN assessments a2 ON m2.assessment_id = a2.id
-                    WHERE m2.student_id = u.id
-                  ), 0)
-                  +
-                  COALESCE((
-                    SELECT fe.final_mark
-                    FROM final_exams fe
-                    WHERE fe.student_id = u.id
-                    LIMIT 1
-                  ), 0)
-                ) / 2
-              ), 2) AS cgpa,
               CASE
-                WHEN ((
-                  COALESCE((
-                    SELECT AVG(m2.mark_obtained)
-                    FROM marks m2
-                    JOIN assessments a2 ON m2.assessment_id = a2.id
-                    WHERE m2.student_id = u.id
-                  ), 0)
-                  +
-                  COALESCE((
-                    SELECT fe.final_mark
-                    FROM final_exams fe
-                    WHERE fe.student_id = u.id
-                    LIMIT 1
-                  ), 0)
-                ) / 2) >= 80 THEN 'Good Standing'
-                WHEN ((
-                  COALESCE((
-                    SELECT AVG(m2.mark_obtained)
-                    FROM marks m2
-                    JOIN assessments a2 ON m2.assessment_id = a2.id
-                    WHERE m2.student_id = u.id
-                  ), 0)
-                  +
-                  COALESCE((
-                    SELECT fe.final_mark
-                    FROM final_exams fe
-                    WHERE fe.student_id = u.id
-                    LIMIT 1
-                  ), 0)
-                ) / 2) >= 60 THEN 'Warning'
+                WHEN u.matric_number LIKE '%ECJH%' THEN 'Software Engineering'
+                WHEN u.matric_number LIKE '%ECRH%' THEN 'Networking'
+                ELSE 'Unknown'
+              END AS program,
+              ROUND(COALESCE((SELECT AVG(gpa) FROM final_exams fe WHERE fe.student_id = u.id), 0), 2) AS cgpa,
+              CASE
+                WHEN (SELECT AVG(gpa) FROM final_exams fe WHERE fe.student_id = u.id) >= 3.0 THEN 'Good Standing'
+                WHEN (SELECT AVG(gpa) FROM final_exams fe WHERE fe.student_id = u.id) >= 2.0 THEN 'Warning'
                 ELSE 'Probation'
               END AS status
             FROM
@@ -129,12 +89,27 @@ $app->group('/api/advisor',  function (RouteCollectorProxy $group) use ($pdo) {
             // Calculate total and status
             foreach ($results as &$result) {
                 $result['total'] = $result['total_without_final'] + ($result['final'] ?? 0);
-                if ($result['total'] >= 80) {
-                    $result['status'] = 'Good Standing';
-                } elseif ($result['total'] >= 60) {
-                    $result['status'] = 'Warning';
+                $total = $result['total'];
+                if ($total >= 90) {
+                    $result['status'] = 'A+';
+                } elseif ($total >= 80) {
+                    $result['status'] = 'A';
+                } elseif ($total >= 75) {
+                    $result['status'] = 'A-';
+                } elseif ($total >= 70) {
+                    $result['status'] = 'B+';
+                } elseif ($total >= 65) {
+                    $result['status'] = 'B';
+                } elseif ($total >= 60) {
+                    $result['status'] = 'B-';
+                } elseif ($total >= 55) {
+                    $result['status'] = 'C+';
+                } elseif ($total >= 50) {
+                    $result['status'] = 'C';
+                } elseif ($total >= 45) {
+                    $result['status'] = 'D';
                 } else {
-                    $result['status'] = 'Probation';
+                    $result['status'] = 'F';
                 }
                 unset($result['total_without_final']);
             }
