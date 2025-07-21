@@ -8,18 +8,15 @@ require __DIR__ . '/../public/LecturerRoutes.php';
 require __DIR__ . '/../public/AdminRoutes.php';
 require __DIR__ . '/../public/AdvisorRoutes.php';
 
-/* GET SESSION */
-
+// Example route to get session
 $app->get('/api/session', function ($request, $response) {
-
     if (!isset($_SESSION['user'])) {
-        return $response->withStatus(401)->withHeader('Content-Type', 'application/json')
-            ->write(json_encode(['error' => 'Not logged in']));
+        $response->getBody()->write(json_encode(['error' => 'Not logged in']));
+        return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
     }
 
     $user = $_SESSION['user'];
 
-    // Only return safe fields
     $response->getBody()->write(json_encode([
         'id' => $user['id'],
         'name' => $user['name'],

@@ -240,7 +240,7 @@ $app->group('/api/student', function (RouteCollectorProxy $group) use ($pdo) {
 
         if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'student') {
             return $response->withStatus(401)->write('Unauthorized');
-        }
+        } 
 
         $student_id = $_SESSION['user']['id'];
 

@@ -3,15 +3,36 @@ require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../src/db.php';
 
 use Slim\Factory\AppFactory;
-use Psr\Http\Message\ResponseInterface as Response;
-use Psr\Http\Message\ServerRequestInterface as Request;
+use Tuupola\Middleware\CorsMiddleware;
+
+session_set_cookie_params([
+  'secure' => true,
+  'httponly' => true,
+  'samesite' => 'None',
+]);
 
 session_start();
 
-$pdo = getPDO();
+// Create app
 $app = AppFactory::create();
-$app->addBodyParsingMiddleware(); // For JSON parsing
 
-require __DIR__ . '/routes.php';
+// Database
+$pdo = getPDO();
 
+// Add CORS middleware
+$app->add(new CorsMiddleware([
+    "origin" => ["https://e-klas.site"],  // No localhost here anymore
+    "methods" => ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "headers.allow" => ["Authorization", "Content-Type"],
+    "credentials" => true,
+]));
+
+
+// Add body parsing middleware
+$app->addBodyParsingMiddleware();
+
+// Now that $app exists, load routes AFTER this
+require __DIR__ . '/../public/routes.php';
+
+// Run app
 $app->run();
